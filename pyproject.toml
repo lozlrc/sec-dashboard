@@ -1,0 +1,21 @@
+[project]
+name = "sec-dashboard"
+version = "0.1.0"
+description = "Pull SEC EDGAR filings and visualize company fundamentals in an interactive dashboard"
+requires-python = ">=3.12"
+dependencies = [
+    "streamlit>=1.40",
+    "plotly>=5.24",
+    "pandas>=2.2",
+    "requests>=2.32",
+    "pdfplumber>=0.11",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "fpdf2>=2.8",
+]
+
+[tool.uv]
+package = false
