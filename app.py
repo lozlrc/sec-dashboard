@@ -424,16 +424,29 @@ def render_pdf_tab() -> None:
                        "pdf_financials.csv", "text/csv")
 
 
+# Plain-language names for the retrieval strategies (internal value -> label).
+SEARCH_LABELS = {
+    "hybrid": "Smart search (recommended)",
+    "bm25": "Match the exact words",
+    "tfidf": "Match the important words",
+}
+ASK_EXAMPLES = [
+    "What are the biggest risks the company faces?",
+    "Why did revenue change this year?",
+    "How does the company return cash to shareholders?",
+]
+
+
 def render_ask_tab(loaded: dict) -> None:
-    st.subheader("Ask the filings")
+    st.subheader("Ask about the annual report")
     st.caption(
-        "Citation-grounded Q&A over a company's 10-K. Your question retrieves the "
-        "most relevant passages from the actual filing and answers **only** from "
-        "them — every claim links back to its source, so it can't invent a figure "
-        "that isn't in the document."
+        "Type a plain-English question about a company's annual report (the "
+        "**10-K**). The app finds the relevant parts of the actual document and "
+        "answers **only** from them — every answer shows exactly where it came "
+        "from, so it can't make up a number that isn't in the report."
     )
     if not loaded:
-        st.info("Load a company in the picker above, then ask about its latest 10-K.")
+        st.info("Add a company in the picker at the top, then ask about its annual report.")
         return
 
     c1, c2 = st.columns([2, 3])
@@ -442,73 +455,85 @@ def render_ask_tab(loaded: dict) -> None:
     info = loaded[ticker][0]
     filings = recent_10ks(info["cik"])
     if not filings:
-        st.warning(f"No 10-K filings found for {ticker}.")
+        st.warning(f"No annual report (10-K) found for {ticker}.")
         return
-    labels = {f"{f['form']} · filed {f['filed']}": f for f in filings}
-    pick = c2.selectbox("Filing", list(labels), key="ask_filing")
+    labels = {f"Annual report · filed {f['filed']}": f for f in filings}
+    pick = c2.selectbox("Which report", list(labels), key="ask_filing")
     filing = labels[pick]
-    source = f"{ticker} {filing['form']} ({filing['filed']})"
+    source = f"{ticker} 10-K ({filing['filed']})"
 
     try:
         retriever = build_retriever(filing["url"], source)
     except Exception as exc:  # noqa: BLE001
-        st.error(f"Could not index this filing: {exc}")
+        st.error(f"Could not read this report: {exc}")
         return
-    st.caption(f"Indexed **{len(retriever.chunks)} passages** · dense backend: "
-               f"`{retriever.dense_backend}` · [view filing on SEC.gov]({filing['url']})")
+    st.caption(f"Read this report into **{len(retriever.chunks)} searchable sections** · "
+               f"[view the original on SEC.gov]({filing['url']})")
 
-    with st.expander("Retrieval settings"):
+    with st.expander("Search options"):
         rc1, rc2 = st.columns(2)
-        method = rc1.selectbox("Retrieval strategy", ["hybrid", "bm25", "tfidf"],
-                               key="ask_method",
-                               help="Hybrid fuses BM25 (sparse) and TF-IDF (dense).")
-        k = rc2.slider("Passages to retrieve", 3, 8, 5, key="ask_k")
+        method = rc1.selectbox("How to search", list(SEARCH_LABELS),
+                               format_func=lambda m: SEARCH_LABELS[m], key="ask_method")
+        k = rc2.slider("How many excerpts to show", 3, 8, 5, key="ask_k",
+                       help="More excerpts = broader evidence; fewer = more focused.")
+        st.caption(
+            "**Smart search** blends the other two and favors passages that cover "
+            "more of your question — it usually finds the best one. **Exact words** "
+            "ranks by the words you typed; **important words** also weighs how "
+            "distinctive each word is."
+        )
         use_claude = False
         if rag.claude_available():
             use_claude = st.toggle(
-                f"Generate a written answer with Claude ({rag.DEFAULT_MODEL})",
-                help="Off = extractive (returns the cited source passages verbatim).",
+                "Write a full answer with AI",
+                help="Off: shows the exact wording from the report. "
+                     "On: AI writes a short answer using only the found excerpts.",
             )
         else:
-            st.caption("💡 Set an `ANTHROPIC_API_KEY` (and install the `llm` extra) to "
-                       "enable Claude-written grounded answers. Extractive mode needs no key.")
+            st.caption("💡 Add an AI API key to also get a written summary answer. "
+                       "Without one, the app shows the exact wording from the report.")
 
-    examples = ["What are the biggest risk factors?",
-                "How did management explain the change in revenue?",
-                "How does the company return capital to shareholders?"]
-    st.caption("Try: " + " · ".join(f"*{e}*" for e in examples))
-    query = st.text_input("Your question", key=f"ask_{ticker}_{filing['filed']}",
-                          placeholder=examples[0])
+    st.caption("Try one of these:")
+    ecols = st.columns(len(ASK_EXAMPLES))
+    for i, (col, ex) in enumerate(zip(ecols, ASK_EXAMPLES)):
+        if col.button(ex, key=f"ask_ex_{i}", width="stretch"):
+            st.session_state.ask_query = ex
+
+    query = st.text_input("Your question", key="ask_query",
+                          placeholder="e.g. " + ASK_EXAMPLES[0])
     if not query:
         return
 
-    with st.spinner("Retrieving evidence…"):
+    with st.spinner("Finding the relevant parts of the report…"):
         hits = retriever.search(query, k=k, method=method)
     if not hits:
-        st.warning("No relevant passages found.")
+        st.warning("Couldn't find anything relevant in this report. Try rewording.")
         return
 
     if use_claude:
-        with st.spinner(f"Answering with {rag.DEFAULT_MODEL}…"):
+        with st.spinner("Writing the answer…"):
             try:
                 result = rag.answer_with_claude(query, hits)
             except Exception as exc:  # noqa: BLE001
-                st.error(f"Claude generation failed ({exc}); showing extractive answer.")
+                st.error(f"AI answer failed ({exc}); showing the exact wording instead.")
                 result = rag.answer_extractive(query, hits)
     else:
         result = rag.answer_extractive(query, hits)
 
     st.markdown("#### Answer")
     st.markdown(result["answer"])
-    badge = "Claude-generated, grounded in retrieved passages" if result.get("mode") == "claude" \
-        else "Extractive — passage returned verbatim from the filing"
-    st.caption(f"_{badge}._")
+    if result.get("mode") == "claude":
+        st.caption("🤖 _Written by AI using only the excerpts below._")
+    else:
+        st.caption("📄 _Copied word-for-word from the report — nothing is AI-generated._")
 
-    st.markdown("#### Cited passages")
+    st.markdown("#### Where this comes from")
+    st.caption("The passages the answer is based on, most relevant first:")
     for c in result["citations"]:
-        with st.expander(f"[{c['n']}] {c['section']}  ·  relevance {c['score']:.2f}"):
+        tag = "  ·  best match" if c["n"] == 1 else ""
+        with st.expander(f"Source {c['n']} — {c['section']}{tag}"):
             st.write(c["text"])
-    st.caption(f"Source: [{source}]({filing['url']})")
+    st.caption(f"From: [{source}]({filing['url']})")
 
 
 # --- header & controls (main area, always visible) ----------------------------

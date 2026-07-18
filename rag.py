@@ -28,6 +28,21 @@ from sklearn.metrics.pairwise import linear_kernel
 
 # 10-K narrative sections we care about; headers double as citation labels.
 _ITEM_RE = re.compile(r"\bItem\s+(\d{1,2}[A-Z]?)\.?\s+([A-Z][A-Za-z' ,&/-]{3,60})")
+
+# Canonical 10-K item titles — used for clean, recognizable citation labels
+# instead of whatever text the regex happened to capture from the document.
+_ITEM_TITLES = {
+    "1": "Business", "1A": "Risk Factors", "1B": "Unresolved Staff Comments",
+    "1C": "Cybersecurity", "2": "Properties", "3": "Legal Proceedings",
+    "4": "Mine Safety Disclosures", "5": "Market for Common Stock",
+    "6": "Selected Financial Data", "7": "Management's Discussion & Analysis",
+    "7A": "Market Risk Disclosures", "8": "Financial Statements",
+    "9": "Changes in Accountants", "9A": "Controls & Procedures",
+    "9B": "Other Information", "10": "Directors & Officers",
+    "11": "Executive Compensation", "12": "Security Ownership",
+    "13": "Related Transactions", "14": "Accountant Fees",
+    "15": "Exhibits & Schedules", "16": "Form 10-K Summary",
+}
 _WORD_RE = re.compile(r"[a-z0-9]+")
 _SENT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
 _STOPWORDS = frozenset(
@@ -79,8 +94,12 @@ def _section_markers(text: str) -> list[tuple[int, str]]:
     """(offset, 'Item 1A. Risk Factors') for each section header found."""
     markers: list[tuple[int, str]] = []
     for m in _ITEM_RE.finditer(text):
-        label = f"Item {m.group(1)}. {m.group(2).strip()}"
-        markers.append((m.start(), label))
+        num = m.group(1).upper()
+        title = _ITEM_TITLES.get(num)  # prefer the canonical, clean title
+        if title is None:
+            # fall back to the captured text, trimmed to a short title
+            title = " ".join(m.group(2).split()[:5]).strip(" ,")
+        markers.append((m.start(), f"Item {num} · {title}"))
     markers.sort()
     return markers
 
@@ -238,8 +257,11 @@ def _best_sentences(query: str, text: str, n: int = 2) -> str:
     doesn't rank highly just for sharing 'the'/'of' with the question.
     """
     sents = [s.strip() for s in _SENT_RE.split(text) if len(s.strip()) > 30]
+    # Drop a leading fragment left by a mid-sentence chunk boundary (a "sentence"
+    # that doesn't start with a capital letter), so answers begin cleanly.
+    sents = [s for s in sents if s[:1].isupper()] or sents
     if len(sents) <= n:
-        return text.strip()
+        return " ".join(sents).strip() if sents else text.strip()
     q = {t for t in _tokenize(query) if t not in _STOPWORDS}
 
     def overlap(s: str) -> int:
