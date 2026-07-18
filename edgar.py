@@ -147,6 +147,11 @@ def _get_text(url: str) -> str:
     raise EdgarError(f"Failed to fetch {url}: {last_err}")
 
 
+def get_document(url: str) -> str:
+    """Fetch a filing's primary document (HTML/text), cached like other calls."""
+    return _get_text(url)
+
+
 def load_recent_10k_ciks(quarters: int = 5) -> set[int]:
     """CIKs that filed a 10-K in the last `quarters` quarterly form indexes.
 

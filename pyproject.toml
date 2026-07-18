@@ -9,7 +9,17 @@ dependencies = [
     "pandas>=2.2",
     "requests>=2.32",
     "pdfplumber>=0.11",
+    "beautifulsoup4>=4.12",
+    "rank-bm25>=0.2.2",
+    "scikit-learn>=1.4",
 ]
+
+[project.optional-dependencies]
+# Neural embeddings (heavier: pulls torch). Optional upgrade over the default
+# TF-IDF dense retriever; used by the eval ablation when installed.
+embeddings = ["sentence-transformers>=3.0"]
+# Optional Claude-powered grounded-answer generation (needs an API key).
+llm = ["anthropic>=0.69"]
 
 [dependency-groups]
 dev = [

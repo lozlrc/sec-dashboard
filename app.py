@@ -14,15 +14,17 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-try:  # On Streamlit Cloud the SEC contact string comes from secrets
-    if "SEC_USER_AGENT" in st.secrets:
-        os.environ["SEC_USER_AGENT"] = st.secrets["SEC_USER_AGENT"]
-except FileNotFoundError:  # no secrets.toml locally — env var is used instead
+try:  # On Streamlit Cloud, secrets supply the SEC contact + optional Claude key
+    for _k in ("SEC_USER_AGENT", "ANTHROPIC_API_KEY", "SEC_RAG_MODEL"):
+        if _k in st.secrets:
+            os.environ[_k] = st.secrets[_k]
+except FileNotFoundError:  # no secrets.toml locally — env vars are used instead
     pass
 
 import edgar
 import metrics
 import pdf_extract
+import rag
 from universe import PRESETS, load_options
 
 # --- dataviz palette (validated categorical slots + chart chrome) -------------
@@ -80,6 +82,17 @@ def load_facts(ticker: str):
 @st.cache_data(show_spinner=False)
 def parse_pdf_cached(data: bytes) -> pdf_extract.PdfExtraction:
     return pdf_extract.parse_pdf(data)
+
+
+@st.cache_data(ttl=24 * 3600, show_spinner=False)
+def recent_10ks(cik: str):
+    return edgar.get_recent_filings(cik, forms=("10-K",), limit=6)
+
+
+@st.cache_resource(show_spinner="Indexing filing text…")
+def build_retriever(url: str, source: str):
+    raw = edgar.get_document(url)
+    return rag.build_retriever_from_document(raw, source=source, url=url)
 
 
 # --- formatting helpers -------------------------------------------------------
@@ -411,6 +424,93 @@ def render_pdf_tab() -> None:
                        "pdf_financials.csv", "text/csv")
 
 
+def render_ask_tab(loaded: dict) -> None:
+    st.subheader("Ask the filings")
+    st.caption(
+        "Citation-grounded Q&A over a company's 10-K. Your question retrieves the "
+        "most relevant passages from the actual filing and answers **only** from "
+        "them — every claim links back to its source, so it can't invent a figure "
+        "that isn't in the document."
+    )
+    if not loaded:
+        st.info("Load a company in the picker above, then ask about its latest 10-K.")
+        return
+
+    c1, c2 = st.columns([2, 3])
+    ticker = c1.selectbox("Company", list(loaded), key="ask_company",
+                          format_func=lambda x: f"{x} — {loaded[x][0]['title']}")
+    info = loaded[ticker][0]
+    filings = recent_10ks(info["cik"])
+    if not filings:
+        st.warning(f"No 10-K filings found for {ticker}.")
+        return
+    labels = {f"{f['form']} · filed {f['filed']}": f for f in filings}
+    pick = c2.selectbox("Filing", list(labels), key="ask_filing")
+    filing = labels[pick]
+    source = f"{ticker} {filing['form']} ({filing['filed']})"
+
+    try:
+        retriever = build_retriever(filing["url"], source)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not index this filing: {exc}")
+        return
+    st.caption(f"Indexed **{len(retriever.chunks)} passages** · dense backend: "
+               f"`{retriever.dense_backend}` · [view filing on SEC.gov]({filing['url']})")
+
+    with st.expander("Retrieval settings"):
+        rc1, rc2 = st.columns(2)
+        method = rc1.selectbox("Retrieval strategy", ["hybrid", "bm25", "tfidf"],
+                               key="ask_method",
+                               help="Hybrid fuses BM25 (sparse) and TF-IDF (dense).")
+        k = rc2.slider("Passages to retrieve", 3, 8, 5, key="ask_k")
+        use_claude = False
+        if rag.claude_available():
+            use_claude = st.toggle(
+                f"Generate a written answer with Claude ({rag.DEFAULT_MODEL})",
+                help="Off = extractive (returns the cited source passages verbatim).",
+            )
+        else:
+            st.caption("💡 Set an `ANTHROPIC_API_KEY` (and install the `llm` extra) to "
+                       "enable Claude-written grounded answers. Extractive mode needs no key.")
+
+    examples = ["What are the biggest risk factors?",
+                "How did management explain the change in revenue?",
+                "How does the company return capital to shareholders?"]
+    st.caption("Try: " + " · ".join(f"*{e}*" for e in examples))
+    query = st.text_input("Your question", key=f"ask_{ticker}_{filing['filed']}",
+                          placeholder=examples[0])
+    if not query:
+        return
+
+    with st.spinner("Retrieving evidence…"):
+        hits = retriever.search(query, k=k, method=method)
+    if not hits:
+        st.warning("No relevant passages found.")
+        return
+
+    if use_claude:
+        with st.spinner(f"Answering with {rag.DEFAULT_MODEL}…"):
+            try:
+                result = rag.answer_with_claude(query, hits)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Claude generation failed ({exc}); showing extractive answer.")
+                result = rag.answer_extractive(query, hits)
+    else:
+        result = rag.answer_extractive(query, hits)
+
+    st.markdown("#### Answer")
+    st.markdown(result["answer"])
+    badge = "Claude-generated, grounded in retrieved passages" if result.get("mode") == "claude" \
+        else "Extractive — passage returned verbatim from the filing"
+    st.caption(f"_{badge}._")
+
+    st.markdown("#### Cited passages")
+    for c in result["citations"]:
+        with st.expander(f"[{c['n']}] {c['section']}  ·  relevance {c['score']:.2f}"):
+            st.write(c["text"])
+    st.caption(f"Source: [{source}]({filing['url']})")
+
+
 # --- header & controls (main area, always visible) ----------------------------
 st.markdown("## 📊 SEC Filings Dashboard")
 st.caption(
@@ -455,7 +555,8 @@ for opt in selected:
         tickers.append(t)
 
 # --- load ---------------------------------------------------------------------
-tab_overview, tab_compare, tab_pdf = st.tabs(["📈 Overview", "⚖️ Compare", "📄 PDF import"])
+tab_overview, tab_compare, tab_ask, tab_pdf = st.tabs(
+    ["📈 Overview", "⚖️ Compare", "💬 Ask filings", "📄 PDF import"])
 
 loaded: dict[str, tuple] = {}
 skipped: list[str] = []
@@ -502,6 +603,9 @@ with tab_compare:
         st.info("Add two or more companies in the picker above (or load a peer-group preset) to compare.")
     else:
         render_compare(loaded)
+
+with tab_ask:
+    render_ask_tab(loaded)
 
 with tab_pdf:
     render_pdf_tab()
