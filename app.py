@@ -27,10 +27,10 @@ import pdf_extract
 import rag
 from universe import PRESETS, load_options
 
-# --- dataviz palette (validated categorical slots + chart chrome) -------------
-PALETTE = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"]
-POS, NEG = "#2a78d6", "#e34948"
-GRID, AXIS, MUTED = "#2c2c2a", "#383835", "#898781"
+# --- dataviz palette (terminal categorical slots + chart chrome) --------------
+PALETTE = ["#5B9BD5", "#2FB27C", "#E0A458", "#4CA6A0", "#C77DBB", "#D06B62", "#7FB0D8", "#8A8880"]
+POS, NEG = "#2FB27C", "#E5544B"
+GRID, AXIS, MUTED = "#23262E", "#2E323C", "#8A8880"
 
 MONEY_KEYS = {"revenue", "cost_of_revenue", "gross_profit", "operating_income", "net_income",
               "rnd", "op_cash_flow", "assets", "liabilities", "equity", "cash", "long_term_debt"}
@@ -43,16 +43,140 @@ COMPARE_METRICS = ["revenue", "revenue_growth", "gross_margin", "operating_margi
 
 MAX_COMPANIES = 8
 
-st.set_page_config(page_title="SEC Filings Dashboard", page_icon="📊", layout="wide")
+st.set_page_config(page_title="SEC Filings Dashboard", layout="wide")
 st.markdown(
     """<style>
-    [data-testid="stMetric"] {
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 10px;
-        padding: 12px 16px;
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+    :root{
+        --bg:#0C0D10; --panel:#14161B; --hairline:#23262E; --text:#E8E6E1;
+        --muted:#8A8880; --accent:#2FB27C; --pos:#2FB27C; --neg:#E5544B;
+        --mono:'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+        --sans:'IBM Plex Sans', system-ui, -apple-system, sans-serif;
     }
-    [data-testid="stMetricLabel"] { color: #a9a8a1; }
+
+    html, body, .stApp, [data-testid="stAppViewContainer"],
+    [data-testid="stSidebar"], [class*="st-"]{
+        font-family: var(--sans);
+    }
+    .stApp{ background: var(--bg); color: var(--text); }
+    .block-container{ padding-top: 2.2rem; max-width: 1320px; }
+
+    a, a:visited{ color: var(--accent); text-decoration: none; }
+    a:hover{ text-decoration: underline; }
+
+    /* --- hero wordmark ----------------------------------------------------- */
+    .term-hero{
+        padding: 2px 0 14px;
+        border-bottom: 1px solid var(--hairline);
+        margin-bottom: 14px;
+    }
+    .term-hero__kicker{
+        font-family: var(--mono);
+        font-size: 11px; letter-spacing: .24em; text-transform: uppercase;
+        color: var(--accent); margin-bottom: 7px;
+    }
+    .term-hero__mark{
+        font-family: var(--sans); font-weight: 600;
+        font-size: 30px; line-height: 1.05; letter-spacing: -0.015em;
+        color: var(--text);
+    }
+
+    /* --- headings ---------------------------------------------------------- */
+    h1, h2, h3, h4, h5{ font-family: var(--sans); color: var(--text); }
+    [data-testid="stHeading"] h3, .stMarkdown h3{
+        font-weight: 600; font-size: 18px; letter-spacing: -0.01em;
+        padding-bottom: 8px; margin-bottom: 12px;
+        border-bottom: 1px solid var(--hairline);
+    }
+    .stMarkdown h4{
+        font-family: var(--mono); font-weight: 600; font-size: 11px;
+        letter-spacing: .16em; text-transform: uppercase; color: var(--muted);
+        margin: 14px 0 6px;
+    }
+
+    /* --- captions ---------------------------------------------------------- */
+    [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p{
+        color: var(--muted); font-size: 12.5px;
+    }
+
+    /* --- KPI tiles --------------------------------------------------------- */
+    [data-testid="stMetric"]{
+        background: var(--panel);
+        border: 1px solid var(--hairline);
+        border-radius: 4px;
+        padding: 12px 14px 13px;
+    }
+    [data-testid="stMetricLabel"] p{
+        font-family: var(--mono); font-weight: 500; font-size: 10.5px;
+        letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+    }
+    [data-testid="stMetricValue"]{
+        font-family: var(--mono); font-variant-numeric: tabular-nums;
+        font-weight: 500; font-size: 26px; letter-spacing: -0.01em; color: var(--text);
+    }
+    [data-testid="stMetricDelta"]{
+        font-family: var(--mono); font-variant-numeric: tabular-nums;
+        font-weight: 500; font-size: 12px;
+    }
+    div[data-testid="stMetricDelta"]:has(svg[data-testid="stMetricDeltaIcon-Up"]){ color: var(--pos) !important; }
+    div[data-testid="stMetricDelta"]:has(svg[data-testid="stMetricDeltaIcon-Up"]) svg{ fill: var(--pos) !important; }
+    div[data-testid="stMetricDelta"]:has(svg[data-testid="stMetricDeltaIcon-Down"]){ color: var(--neg) !important; }
+    div[data-testid="stMetricDelta"]:has(svg[data-testid="stMetricDeltaIcon-Down"]) svg{ fill: var(--neg) !important; }
+
+    /* --- underline tab bar ------------------------------------------------- */
+    [data-baseweb="tab-list"]{
+        gap: 2px; border-bottom: 1px solid var(--hairline);
+    }
+    [data-baseweb="tab"]{
+        background: transparent !important; border-radius: 0 !important;
+        font-family: var(--sans); font-weight: 500; font-size: 13px;
+        letter-spacing: .01em; color: var(--muted);
+        padding: 9px 16px;
+    }
+    [data-baseweb="tab"]:hover{ color: var(--text); }
+    [data-baseweb="tab"][aria-selected="true"]{ color: var(--text); }
+    [data-baseweb="tab-highlight"]{ background: var(--accent) !important; height: 2px; }
+    [data-baseweb="tab-border"]{ background: transparent !important; }
+    [data-baseweb="tab"]:focus-visible{ outline: 2px solid var(--accent); outline-offset: -2px; }
+
+    /* --- data: numeric surfaces default to mono tabular figures ------------ */
+    [data-testid="stMetricValue"], [data-testid="stMetricDelta"],
+    [data-testid="stDataFrame"], [data-testid="stTable"],
+    [data-testid="stDataFrameResizable"]{
+        font-variant-numeric: tabular-nums;
+    }
+    [data-testid="stTable"] td, [data-testid="stTable"] th{
+        font-family: var(--mono); font-variant-numeric: tabular-nums;
+    }
+    [data-testid="stTable"] td{ text-align: right; }
+    [data-testid="stTable"] th{ color: var(--muted); font-weight: 600; }
+
+    /* --- buttons ----------------------------------------------------------- */
+    .stButton > button, .stDownloadButton > button{
+        font-family: var(--sans); font-weight: 500; font-size: 13px;
+        border-radius: 4px; border: 1px solid var(--hairline);
+        background: var(--panel); color: var(--text);
+        transition: border-color .12s ease, color .12s ease;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover{
+        border-color: var(--accent); color: var(--accent);
+    }
+    .stButton > button:focus-visible, .stDownloadButton > button:focus-visible{
+        outline: 2px solid var(--accent); outline-offset: 2px;
+    }
+
+    /* --- inputs sit on the panel, not pure black --------------------------- */
+    [data-baseweb="select"] > div, [data-baseweb="input"],
+    .stTextInput input, .stMultiSelect [data-baseweb="select"] > div{
+        font-family: var(--sans); border-radius: 4px;
+    }
+    [data-baseweb="tag"]{ border-radius: 3px !important; }
+
+    /* --- alerts: flat, hairline-bordered, no candy ------------------------- */
+    [data-testid="stAlert"]{
+        border-radius: 4px; border: 1px solid var(--hairline);
+    }
     </style>""",
     unsafe_allow_html=True,
 )
@@ -116,10 +240,14 @@ def fmt_cell(v) -> str:
 def style_fig(fig: go.Figure, ytitle: str, pct: bool = False) -> go.Figure:
     fig.update_layout(
         colorway=PALETTE,
+        font=dict(family="IBM Plex Mono, ui-monospace, monospace", color=MUTED, size=12),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         margin=dict(l=10, r=10, t=30, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, bgcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, bgcolor="rgba(0,0,0,0)",
+                    font=dict(family="IBM Plex Mono, ui-monospace, monospace", color=MUTED, size=11)),
+        hoverlabel=dict(font=dict(family="IBM Plex Mono, ui-monospace, monospace", size=12),
+                        bgcolor="#14161B", bordercolor=GRID),
         hovermode="x unified",
         bargap=0.28,
         bargroupgap=0.08,
@@ -490,7 +618,7 @@ def render_ask_tab(loaded: dict) -> None:
                      "On: AI writes a short answer using only the found excerpts.",
             )
         else:
-            st.caption("💡 Add an AI API key to also get a written summary answer. "
+            st.caption("Add an AI API key to also get a written summary answer. "
                        "Without one, the app shows the exact wording from the report.")
 
     st.caption("Try one of these:")
@@ -523,9 +651,9 @@ def render_ask_tab(loaded: dict) -> None:
     st.markdown("#### Answer")
     st.markdown(result["answer"])
     if result.get("mode") == "claude":
-        st.caption("🤖 _Written by AI using only the excerpts below._")
+        st.caption("_Written by AI using only the excerpts below._")
     else:
-        st.caption("📄 _Copied word-for-word from the report — nothing is AI-generated._")
+        st.caption("_Copied word-for-word from the report — nothing is AI-generated._")
 
     st.markdown("#### Where this comes from")
     st.caption("The passages the answer is based on, most relevant first:")
@@ -537,7 +665,13 @@ def render_ask_tab(loaded: dict) -> None:
 
 
 # --- header & controls (main area, always visible) ----------------------------
-st.markdown("## 📊 SEC Filings Dashboard")
+st.markdown(
+    """<div class="term-hero">
+        <div class="term-hero__kicker">EDGAR · XBRL Fundamentals</div>
+        <div class="term-hero__mark">SEC Filings Dashboard</div>
+    </div>""",
+    unsafe_allow_html=True,
+)
 st.caption(
     "Fundamentals straight from [SEC EDGAR](https://www.sec.gov/edgar) XBRL filings. "
     "Fiscal years labeled by period-end year."
@@ -581,7 +715,7 @@ for opt in selected:
 
 # --- load ---------------------------------------------------------------------
 tab_overview, tab_compare, tab_ask, tab_pdf = st.tabs(
-    ["📈 Overview", "⚖️ Compare", "💬 Ask filings", "📄 PDF import"])
+    ["Overview", "Compare", "Ask filings", "PDF import"])
 
 loaded: dict[str, tuple] = {}
 skipped: list[str] = []
@@ -607,7 +741,7 @@ for t in tickers[:MAX_COMPANIES]:
 if skipped:
     st.warning(
         f"Skipped **{', '.join(skipped)}** — no US-GAAP filings on EDGAR (foreign "
-        "filer or OTC listing). Use the **📄 PDF import** tab for these companies."
+        "filer or OTC listing). Use the **PDF import** tab for these companies."
     )
 for e in errors:
     st.error(e)
